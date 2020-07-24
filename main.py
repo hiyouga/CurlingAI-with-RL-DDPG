@@ -183,8 +183,10 @@ class DDPG(object):
         return matrix
 
     def select_action(self, state):
-        state = torch.FloatTensor(state).unsqueeze(0).to(DEVICE)
-        return self.actor(state).cpu().data.numpy().flatten()
+        with torch.no_grad():
+            state = torch.FloatTensor(state).unsqueeze(0).to(DEVICE)
+            action = self.actor(state).cpu().data.numpy().flatten()
+        return action
 
     def update(self):
         self.num_training += 1
@@ -260,6 +262,17 @@ class DDPG(object):
         torch.save(state_dict, fpath)
         print('model has been saved as {}'.format(fpath))
 
+    def save_test(self):
+        state_dict = {
+            'actor': self.actor.state_dict(),
+            'critic': self.critic.state_dict(),
+            'actor_target': self.actor_target.state_dict(),
+            'critic_target': self.critic_target.state_dict()
+        }
+        fpath = os.path.join(self.dir_name, '{}_test.pth'.format(self.order))
+        torch.save(state_dict, fpath)
+        print('test model has been saved as {}'.format(fpath))
+
     def load(self):
         fpath = os.path.join(self.dir_name, '{}.pth'.format(self.order))
         state_dict = torch.load(fpath, map_location=torch.device(DEVICE))
@@ -275,6 +288,15 @@ class DDPG(object):
         self.actor_optimizer.load_state_dict(state_dict['actor_opt'])
         self.critic_optimizer.load_state_dict(state_dict['critic_opt'])
         print('model has been loaded from {}'.format(fpath))
+    
+    def load_test(self): # root directory
+        fpath = '{}_test.pth'.format(self.order)
+        state_dict = torch.load(fpath, map_location=torch.device(DEVICE))
+        self.actor.load_state_dict(state_dict['actor'])
+        self.critic.load_state_dict(state_dict['critic'])
+        self.actor_target.load_state_dict(state_dict['actor_target'])
+        self.critic_target.load_state_dict(state_dict['critic_target'])
+        print('test model has been loaded from {}'.format(fpath))
 
 def main():
     print('current device: {}'.format(DEVICE))
@@ -323,8 +345,11 @@ def main():
             action_range = torch.FloatTensor(np.array([2.0, 2.2, 10.0]).reshape(1, -1)).to(DEVICE)
             action_offset = torch.FloatTensor(np.array([3.0, 0.0, 0.0]).reshape(1, -1)).to(DEVICE)
             agent = DDPG(action_dim, action_range, action_offset, dir_name, order)
-            agent.initiate()
-            agent.load()
+            if MODE == 'train':
+                agent.initiate()
+                agent.load()
+            if MODE == 'test':
+                agent.load_test()
 
         if messageList[0] == 'ISREADY':
             time.sleep(0.5)
@@ -349,7 +374,7 @@ def main():
                     s_state.append(list(map(int, messageList[i+1:i+5])))
                     is_recv = True
 
-        if is_recv:
+        if is_recv and MODE == 'train':
             is_recv = False
             if has_action or done:
                 next_state = agent.getMatrix(s_state)
@@ -379,11 +404,22 @@ def main():
                     ep_r = 0
                     agent.num_episode += 1
                     agent.save()
+                    agent.save_test()
                     if score != 0:
                         next_order = 'sente' if score > 0 else 'gote'
                         if agent.order != next_order:
                             agent.turn()
                             agent.load()
+
+        if is_recv and MODE == 'test':
+            is_recv = False
+            if done:
+                done = False
+                if score != 0:
+                    next_order = 'sente' if score > 0 else 'gote'
+                    if agent.order != next_order:
+                        agent.turn()
+                        agent.load_test()
 
         if messageList[0] == 'GO':
             is_go = True
@@ -412,6 +448,13 @@ def main():
                 if messageList[i] == '\x00SCORE':
                     score = int(messageList[i+1])
                     done = True
+
+        if messageList[0] == 'GAMEOVER':
+            exit()
+        else:
+            for i in range(1, len(messageList)):
+                if messageList[i] == '\x00GAMEOVER':
+                    exit()
 
 if __name__ == '__main__':
     main()
