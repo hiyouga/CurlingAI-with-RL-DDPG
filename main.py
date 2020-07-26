@@ -13,8 +13,8 @@ TAU = 0.01 # soft replacement
 LR_A = 1e-3 # learning rate for actor
 LR_C = 2e-3 # learning rate for critic
 GAMMA = 0.9 # reward discount
-MEMORY_CAPACITY = 2000 # the capacity of replay buffer (~1000)
-BATCH_SIZE = 32 # sample batch size (~32)
+MEMORY_CAPACITY = 4000 # the capacity of replay buffer (~4000)
+BATCH_SIZE = 16 # sample batch size (~16)
 EXPLORATION_NOISE = 0.1 # noise amplitude for exploration
 UPDATE_ITERATION = 10 # iteration to update model parameter
 # normal distribution
@@ -50,9 +50,8 @@ class BasicBlock(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, num_blocks, num_classes=10, dropout=0):
+    def __init__(self, block, num_blocks):
         super(ResNet, self).__init__()
-        self.num_classes = num_classes
         self.in_planes = 64
         self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
@@ -60,8 +59,6 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.linear = nn.Linear(512 * block.expansion, num_classes)
-        self.dropout = nn.Dropout(dropout)
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks-1)
@@ -80,12 +77,10 @@ class ResNet(nn.Module):
         out = self.layer4(out)
         out = F.avg_pool2d(out, 4)
         out = out.view(out.size(0), -1)
-        out = self.dropout(out)
-        out = self.linear(out)
         return out
 
-def resnet18(num_classes, dropout=0):
-    return ResNet(BasicBlock, [2, 2, 2, 2], num_classes, dropout)
+def resnet18():
+    return ResNet(BasicBlock, [2, 2, 2, 2])
 
 class Replay_buffer(object):
 
@@ -107,34 +102,36 @@ class Replay_buffer(object):
 
         for i in ind:
             X, Y, U, R, D = self.storage[i]
-            x.append(X)
-            y.append(Y)
-            u.append(U)
-            r.append(R)
-            d.append(D)
+            x.append(np.array(X, copy=False))
+            y.append(np.array(Y, copy=False))
+            u.append(np.array(U, copy=False))
+            r.append(np.array(R, copy=False))
+            d.append(np.array(D, copy=False))
         return np.array(x), np.array(y), np.array(u), np.array(r), np.array(d)
 
 class Actor(nn.Module):
 
     def __init__(self, action_dim, action_range, action_offset):
         super(Actor, self).__init__()
-        self.resnet = resnet18(num_classes=action_dim)
+        self.resnet = resnet18()
+        self.linear = nn.Linear(512, action_dim)
         self.action_range = action_range
         self.action_offset = action_offset
 
     def forward(self, x):
-        out = torch.tanh(self.resnet(x))
-        out = self.action_offset + self.action_range * out
+        out = self.linear(self.resnet(x))
+        out = self.action_offset + self.action_range * torch.tanh(out)
         return out
 
 class Critic(nn.Module):
 
     def __init__(self, action_dim):
         super(Critic, self).__init__()
-        self.resnet = resnet18(num_classes=1)
+        self.resnet = resnet18()
+        self.linear = nn.Linear(512, 1)
 
-    def forward(self, x, u):
-        out = self.resnet(x)
+    def forward(self, x, u): # should include u (action)
+        out = self.linear(self.resnet(x))
         return out
 
 class DDPG(object):
@@ -387,12 +384,12 @@ def main():
                     else:
                         reward = -1.0 * ((px-2.375)**2 + (py-4.88)**2)
                     ep_r += reward
-                    agent.replay_buffer.push((state, next_state, action, reward, 0))
+                    agent.replay_buffer.push((state, next_state, action, [reward], [0]))
 
                 if done:
                     reward = 1000.0 * score
                     ep_r += reward
-                    agent.replay_buffer.push((state, next_state, action, reward, 1))
+                    agent.replay_buffer.push((state, next_state, action, [reward], [1]))
 
                 if len(agent.replay_buffer.storage) >= BATCH_SIZE:
                     agent.update()
@@ -435,7 +432,7 @@ def main():
 
             action = agent.select_action(state)
             action = (action + np.array([2.0, 2.0, 2.0]) * np.random.normal(0, EXPLORATION_NOISE, size=3))
-            action = np.clip(action, np.array([2.4, -2.2, -10]), np.array([8.0, 2.2, 10]))
+            action = np.clip(action, np.array([2.5, -2.2, -10]), np.array([6.0, 2.2, 10]))
             shot = 'BESTSHOT {}'.format(str(list(action))[1:-1].replace(',', ''))
             print('send:{}'.format(shot))
             obj.send(bytes(shot, encoding='utf-8'))
